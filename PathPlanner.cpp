@@ -9,6 +9,14 @@
 // 全局变量
 HBITMAP g_hCurrentBitmap = NULL;  // 当前显示的位图
 int g_nCurrentImageID = 0;        // 当前图片资源ID（0=无）
+bool g_bShowAxis = false;  // 初始显示坐标轴
+struct {
+    int x;      // 图片显示区域左上角X坐标
+    int y;      // 图片显示区域左上角Y坐标
+    int width;  // 图片显示宽度
+    int height; // 图片显示高度
+} g_imageRect = { 0 };
+
 
 // 声明窗口过程函数
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -71,6 +79,32 @@ int WINAPI WinMain(
     return (int)msg.wParam;
 }
 
+void DrawCoordinateAxis(HDC hdc) {
+    if (!g_hCurrentBitmap) return; // 无图片时不绘制
+
+    // 计算图片中心点
+    POINT origin = {
+        g_imageRect.x + g_imageRect.width / 2,
+        g_imageRect.y + g_imageRect.height / 2
+    };
+
+    // 创建画笔
+    HPEN hAxisPen = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
+    HPEN hOldPen = (HPEN)SelectObject(hdc, hAxisPen);
+
+    // 绘制X轴（横跨整个窗口）
+    MoveToEx(hdc, 0, origin.y, NULL);
+    LineTo(hdc, GetSystemMetrics(SM_CXSCREEN), origin.y); // 或使用窗口宽度
+
+    // 绘制Y轴（横跨整个窗口）
+    MoveToEx(hdc, origin.x, 0, NULL);
+    LineTo(hdc, origin.x, GetSystemMetrics(SM_CYSCREEN));
+
+    // 恢复资源
+    SelectObject(hdc, hOldPen);
+    DeleteObject(hAxisPen);
+}
+
 // 对话框过程函数（处理关于窗口的消息）
 INT_PTR CALLBACK AboutDialogProc(
     HWND hDlg,
@@ -98,6 +132,20 @@ LRESULT CALLBACK WndProc(
     WPARAM wParam, LPARAM lParam
 ) {
     switch (message) {
+    case WM_CREATE: {
+        // 获取窗口菜单句柄
+        HMENU hMenu = GetMenu(hWnd);
+
+        // 设置初始未勾选状态
+        CheckMenuItem(
+            hMenu,              // 菜单句柄
+            IDM_AXIS,     // 菜单项ID
+            MF_BYCOMMAND | MF_UNCHECKED // 取消勾选
+        );
+
+        // 其他初始化代码...
+        return 0;
+    }
     case WM_DESTROY:  // 窗口被销毁
         if (g_hCurrentBitmap) DeleteObject(g_hCurrentBitmap);
         PostQuitMessage(0);  // 退出消息循环
@@ -142,6 +190,15 @@ LRESULT CALLBACK WndProc(
             SetStretchBltMode(hdc, HALFTONE);  // 启用高质量缩放
             SetBrushOrgEx(hdc, 0, 0, NULL);   // HALFTONE 模式需要重置画刷原点
 
+            float _scale = min(
+                (float)rect.right / bmp.bmWidth,
+                (float)rect.bottom / bmp.bmHeight
+            );
+            g_imageRect.width = (int)(bmp.bmWidth * _scale);
+            g_imageRect.height = (int)(bmp.bmHeight * _scale);
+            g_imageRect.x = (rect.right - g_imageRect.width) / 2;
+            g_imageRect.y = (rect.bottom - g_imageRect.height) / 2;
+
             // 绘制（带缩放）
             StretchBlt(
                 hdc,
@@ -154,7 +211,13 @@ LRESULT CALLBACK WndProc(
             );
 
             DeleteDC(hdcMem);
-        }else {
+        }
+
+        if (g_bShowAxis) {
+            DrawCoordinateAxis(hdc);
+        }
+        
+        if(g_hCurrentBitmap == 0){
             const wchar_t* tipText = L"点击设置选择场地";
 
             // 设置字体（使用系统默认GUI字体）
@@ -207,8 +270,18 @@ LRESULT CALLBACK WndProc(
         case IDM_VURC_TOURNAMENT:  // 菜单项ID（假设为4001）
             g_nCurrentImageID = IDB_BITMAP4;
             break;
-        }
 
+        case IDM_AXIS:  // 切换坐标轴显示
+            g_bShowAxis = !g_bShowAxis;
+
+            // 更新菜单勾选状态
+            HMENU hMenu = GetMenu(hWnd);
+            CheckMenuItem(hMenu, IDM_AXIS,
+                g_bShowAxis ? MF_CHECKED : MF_UNCHECKED);
+
+            InvalidateRect(hWnd, NULL, TRUE);
+            break;
+        }
 
         // 释放旧位图
         if (g_hCurrentBitmap) {
