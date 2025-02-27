@@ -39,10 +39,22 @@
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
-    <Image Include="small.ico">
+    <Image Include="PathPlanner.ico">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="PathPlanner.ico">
+    <Image Include="bitmap1.bmp">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="V5RC_S_2024-2025.bmp">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="V5RC_T_2024_2025.bmp">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="VURC_S_2024_2025.bmp">
+      <Filter>资源文件</Filter>
+    </Image>
+    <Image Include="VURC_T_2024_2025.bmp">
       <Filter>资源文件</Filter>
     </Image>
   </ItemGroup>

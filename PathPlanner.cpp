@@ -6,6 +6,10 @@
 
 #include <windows.h>
 
+// 全局变量
+HBITMAP g_hCurrentBitmap = NULL;  // 当前显示的位图
+int g_nCurrentImageID = 0;        // 当前图片资源ID（0=无）
+
 // 声明窗口过程函数
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
@@ -36,11 +40,11 @@ int WINAPI WinMain(
     HWND hWnd = CreateWindow(
         CLASS_NAME,                // 窗口类名称
         L"PathPlanner",         // 窗口标题
-        WS_OVERLAPPEDWINDOW,       // 窗口样式
+        WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX, // 关键样式       // 窗口样式
 
         // 初始位置和大小
         CW_USEDEFAULT, CW_USEDEFAULT,
-        800, 600,
+        1080, 1080,
 
         NULL,       // 父窗口句柄
         LoadMenu(hInstance, MAKEINTRESOURCE(IDC_PATHPLANNER)),
@@ -95,6 +99,7 @@ LRESULT CALLBACK WndProc(
 ) {
     switch (message) {
     case WM_DESTROY:  // 窗口被销毁
+        if (g_hCurrentBitmap) DeleteObject(g_hCurrentBitmap);
         PostQuitMessage(0);  // 退出消息循环
         return 0;
 
@@ -103,7 +108,72 @@ LRESULT CALLBACK WndProc(
         HDC hdc = BeginPaint(hWnd, &ps);
 
         // 在此处添加绘图代码
-        TextOut(hdc, 50, 50, L"Hello, Win32!", 12);
+        // 清空背景
+        RECT rect;
+        GetClientRect(hWnd, &rect);
+        FillRect(hdc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+
+        // 如果标志为真，绘制图片
+        if (g_hCurrentBitmap) {
+            HDC hdcMem = CreateCompatibleDC(hdc);
+            SelectObject(hdcMem, g_hCurrentBitmap);
+
+            BITMAP bmp;
+            GetObject(g_hCurrentBitmap, sizeof(BITMAP), &bmp);
+
+            // 居中绘制图片
+            int srcWidth = bmp.bmWidth;
+            int srcHeight = bmp.bmHeight;
+            int destWidth, destHeight;
+            int offsetX = 0, offsetY = 0;
+
+            // 计算缩放比例
+            float scaleX = (float)rect.right / srcWidth;
+            float scaleY = (float)rect.bottom / srcHeight;
+            float scale = min(scaleX, scaleY); // 按最小比例缩放（保持宽高比）
+
+            destWidth = (int)(srcWidth * scale);
+            destHeight = (int)(srcHeight * scale);
+
+            // 计算居中位置
+            offsetX = (rect.right - destWidth) / 2;
+            offsetY = (rect.bottom - destHeight) / 2;
+
+            SetStretchBltMode(hdc, HALFTONE);  // 启用高质量缩放
+            SetBrushOrgEx(hdc, 0, 0, NULL);   // HALFTONE 模式需要重置画刷原点
+
+            // 绘制（带缩放）
+            StretchBlt(
+                hdc,
+                offsetX, offsetY,
+                destWidth, destHeight,
+                hdcMem,
+                0, 0,
+                srcWidth, srcHeight,
+                SRCCOPY
+            );
+
+            DeleteDC(hdcMem);
+        }else {
+            const wchar_t* tipText = L"点击设置选择场地";
+
+            // 设置字体（使用系统默认GUI字体）
+            HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+            SelectObject(hdc, hFont);
+
+            // 设置文字颜色
+            SetTextColor(hdc, RGB(150, 150, 150));  // 灰色
+            SetBkMode(hdc, TRANSPARENT);  // 透明背景
+
+            // 计算文字位置（居中）
+            SIZE textSize;
+            GetTextExtentPoint32(hdc, tipText, wcslen(tipText), &textSize);
+            int x = (rect.right - textSize.cx) / 2;
+            int y = (rect.bottom - textSize.cy) / 2;
+
+            // 绘制文字
+            TextOut(hdc, x, y, tipText, wcslen(tipText));
+        }
 
         EndPaint(hWnd, &ps);
         return 0;
@@ -121,7 +191,41 @@ LRESULT CALLBACK WndProc(
                 AboutDialogProc         // 对话框过程函数
             );
             break;
+
+        case IDM_V5RC_SKILL:  // 菜单项ID（假设为4001）
+            g_nCurrentImageID = IDB_BITMAP1;
+            break;
+
+        case IDM_V5RC_TOURNAMENT:  // 菜单项ID（假设为4001）
+            g_nCurrentImageID = IDB_BITMAP2;
+            break;
+
+        case IDM_VURC_SKILL:  // 菜单项ID（假设为4001）
+            g_nCurrentImageID = IDB_BITMAP3;
+            break;
+
+        case IDM_VURC_TOURNAMENT:  // 菜单项ID（假设为4001）
+            g_nCurrentImageID = IDB_BITMAP4;
+            break;
         }
+
+
+        // 释放旧位图
+        if (g_hCurrentBitmap) {
+            DeleteObject(g_hCurrentBitmap);
+            g_hCurrentBitmap = NULL;
+        }
+
+        // 加载新位图
+        if (g_nCurrentImageID != 0) {
+            g_hCurrentBitmap = LoadBitmap(
+                GetModuleHandle(NULL),
+                MAKEINTRESOURCE(g_nCurrentImageID)
+            );
+        }
+
+        // 强制重绘
+        InvalidateRect(hWnd, NULL, TRUE);
         return 0;
     }
 
