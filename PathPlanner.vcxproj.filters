@@ -42,9 +42,6 @@
     <Image Include="PathPlanner.ico">
       <Filter>资源文件</Filter>
     </Image>
-    <Image Include="bitmap1.bmp">
-      <Filter>资源文件</Filter>
-    </Image>
     <Image Include="V5RC_S_2024-2025.bmp">
       <Filter>资源文件</Filter>
     </Image>

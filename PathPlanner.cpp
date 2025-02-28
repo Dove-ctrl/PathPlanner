@@ -5,18 +5,30 @@
 #include "PathPlanner.h"
 
 #include <windows.h>
+#include <vector>
+
+#define IDM_RIGHT_CREATE_POINT     5001  
+#define IDM_RIGHT_DELETE_POINT      5002  
+#define IDM_RIGHT_CREATE_CURVE      5002  
 
 // 全局变量
 HBITMAP g_hCurrentBitmap = NULL;  // 当前显示的位图
 int g_nCurrentImageID = 0;        // 当前图片资源ID（0=无）
 bool g_bShowAxis = false;  // 初始显示坐标轴
-struct {
-    int x;      // 图片显示区域左上角X坐标
-    int y;      // 图片显示区域左上角Y坐标
-    int width;  // 图片显示宽度
-    int height; // 图片显示高度
-} g_imageRect = { 0 };
+RECT g_imageRect = { 0 };
 
+enum BezierType { Quadratic, Cubic, Quartic};
+BezierType g_bezier_type = Quadratic;
+
+struct ControlPoint {
+    POINT pos;
+    COLORREF color;
+};
+
+std::vector<ControlPoint> g_controlPoints; // 存储所有控制点
+int g_selectedPoint = -1;                 // 当前选中的点索引（-1表示未选中）
+bool g_dragging = false;                  // 是否正在拖动
+const int POINT_RADIUS = 5;               // 控制点半径
 
 // 声明窗口过程函数
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -79,30 +91,52 @@ int WINAPI WinMain(
     return (int)msg.wParam;
 }
 
-void DrawCoordinateAxis(HDC hdc) {
-    if (!g_hCurrentBitmap) return; // 无图片时不绘制
+std::vector<POINT> CalculateQuadraticBezier(POINT p0, POINT p1, POINT p2, float step = 0.01f) {
+    std::vector<POINT> result;
+    for (float t = 0; t <= 1.0f; t += step) {
+        float u = 1 - t;
+        POINT pt;
+        pt.x = (int)(u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x);
+        pt.y = (int)(u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y);
+        result.push_back(pt);
+    }
+    return result;
+}
 
-    // 计算图片中心点
-    POINT origin = {
-        g_imageRect.x + g_imageRect.width / 2,
-        g_imageRect.y + g_imageRect.height / 2
-    };
+std::vector<POINT> CalculateCubicBezier(POINT p0, POINT p1, POINT p2, POINT p3, float step = 0.01f) {
+    std::vector<POINT> result;
+    for (float t = 0; t <= 1.0f; t += step) {
+        float u = 1 - t;
+        POINT pt;
+        pt.x = (int)(u * u * u * p0.x + 3 * u * u * t * p1.x + 3 * u * t * t * p2.x + t * t * t * p3.x);
+        pt.y = (int)(u * u * u * p0.y + 3 * u * u * t * p1.y + 3 * u * t * t * p2.y + t * t * t * p3.y);
+        result.push_back(pt);
+    }
+    return result;
+}
 
-    // 创建画笔
-    HPEN hAxisPen = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
-    HPEN hOldPen = (HPEN)SelectObject(hdc, hAxisPen);
-
-    // 绘制X轴（横跨整个窗口）
-    MoveToEx(hdc, 0, origin.y, NULL);
-    LineTo(hdc, GetSystemMetrics(SM_CXSCREEN), origin.y); // 或使用窗口宽度
-
-    // 绘制Y轴（横跨整个窗口）
-    MoveToEx(hdc, origin.x, 0, NULL);
-    LineTo(hdc, origin.x, GetSystemMetrics(SM_CYSCREEN));
-
-    // 恢复资源
-    SelectObject(hdc, hOldPen);
-    DeleteObject(hAxisPen);
+std::vector<POINT> CalculateQuarticBezier(POINT p0, POINT p1, POINT p2, POINT p3, POINT p4, float step = 0.01f) {
+    std::vector<POINT> result;
+    for (float t = 0; t <= 1.0f; t += step) {
+        float u = 1 - t;
+        POINT pt;
+        pt.x = (int)(
+            u * u * u * u * p0.x +
+            4 * u * u * u * t * p1.x +
+            6 * u * u * t * t * p2.x +
+            4 * u * t * t * t * p3.x +
+            t * t * t * t * p4.x
+            );
+        pt.y = (int)(
+            u * u * u * u * p0.y +
+            4 * u * u * u * t * p1.y +
+            6 * u * u * t * t * p2.y +
+            4 * u * t * t * t * p3.y +
+            t * t * t * t * p4.y
+            );
+        result.push_back(pt);
+    }
+    return result;
 }
 
 // 对话框过程函数（处理关于窗口的消息）
@@ -133,117 +167,253 @@ LRESULT CALLBACK WndProc(
 ) {
     switch (message) {
     case WM_CREATE: {
-        // 获取窗口菜单句柄
-        HMENU hMenu = GetMenu(hWnd);
-
-        // 设置初始未勾选状态
-        CheckMenuItem(
-            hMenu,              // 菜单句柄
-            IDM_AXIS,     // 菜单项ID
-            MF_BYCOMMAND | MF_UNCHECKED // 取消勾选
-        );
 
         // 其他初始化代码...
         return 0;
     }
-    case WM_DESTROY:  // 窗口被销毁
+    case WM_DESTROY: {  // 窗口被销毁
         if (g_hCurrentBitmap) DeleteObject(g_hCurrentBitmap);
         PostQuitMessage(0);  // 退出消息循环
         return 0;
-
-    case WM_PAINT: {  // 窗口需要重绘
+    }
+    case WM_PAINT: {
         PAINTSTRUCT ps;
         HDC hdc = BeginPaint(hWnd, &ps);
 
-        // 在此处添加绘图代码
-        // 清空背景
-        RECT rect;
-        GetClientRect(hWnd, &rect);
-        FillRect(hdc, &rect, (HBRUSH)(COLOR_WINDOW + 1));
+        // === 双缓冲初始化 ===
+        HDC hdcMem = CreateCompatibleDC(hdc);
+        HBITMAP hbmMem = CreateCompatibleBitmap(hdc, ps.rcPaint.right, ps.rcPaint.bottom);
+        SelectObject(hdcMem, hbmMem);
 
-        // 如果标志为真，绘制图片
+        // === 1. 清空背景 ===
+        RECT clientRect;
+        GetClientRect(hWnd, &clientRect);
+        FillRect(hdcMem, &clientRect, (HBRUSH)(COLOR_WINDOW + 1));
+
+        // === 2. 绘制图片 ===
         if (g_hCurrentBitmap) {
-            HDC hdcMem = CreateCompatibleDC(hdc);
-            SelectObject(hdcMem, g_hCurrentBitmap);
-
+            HDC hdcImage = CreateCompatibleDC(hdcMem);
+            SelectObject(hdcImage, g_hCurrentBitmap);
             BITMAP bmp;
             GetObject(g_hCurrentBitmap, sizeof(BITMAP), &bmp);
 
-            // 居中绘制图片
-            int srcWidth = bmp.bmWidth;
-            int srcHeight = bmp.bmHeight;
-            int destWidth, destHeight;
-            int offsetX = 0, offsetY = 0;
-
-            // 计算缩放比例
-            float scaleX = (float)rect.right / srcWidth;
-            float scaleY = (float)rect.bottom / srcHeight;
-            float scale = min(scaleX, scaleY); // 按最小比例缩放（保持宽高比）
-
-            destWidth = (int)(srcWidth * scale);
-            destHeight = (int)(srcHeight * scale);
-
-            // 计算居中位置
-            offsetX = (rect.right - destWidth) / 2;
-            offsetY = (rect.bottom - destHeight) / 2;
-
-            SetStretchBltMode(hdc, HALFTONE);  // 启用高质量缩放
-            SetBrushOrgEx(hdc, 0, 0, NULL);   // HALFTONE 模式需要重置画刷原点
-
-            float _scale = min(
-                (float)rect.right / bmp.bmWidth,
-                (float)rect.bottom / bmp.bmHeight
+            // 计算图片显示区域
+            float scale = min(
+                (float)clientRect.right / bmp.bmWidth,
+                (float)clientRect.bottom / bmp.bmHeight
             );
-            g_imageRect.width = (int)(bmp.bmWidth * _scale);
-            g_imageRect.height = (int)(bmp.bmHeight * _scale);
-            g_imageRect.x = (rect.right - g_imageRect.width) / 2;
-            g_imageRect.y = (rect.bottom - g_imageRect.height) / 2;
+            g_imageRect.left = (clientRect.right - (int)(bmp.bmWidth * scale)) / 2;
+            g_imageRect.top = (clientRect.bottom - (int)(bmp.bmHeight * scale)) / 2;
+            g_imageRect.right = g_imageRect.left + (int)(bmp.bmWidth * scale);
+            g_imageRect.bottom = g_imageRect.top + (int)(bmp.bmHeight * scale);
 
-            // 绘制（带缩放）
+            // 绘制图片到内存DC
+            SetStretchBltMode(hdcMem, HALFTONE);
             StretchBlt(
-                hdc,
-                offsetX, offsetY,
-                destWidth, destHeight,
-                hdcMem,
-                0, 0,
-                srcWidth, srcHeight,
-                SRCCOPY
+                hdcMem, g_imageRect.left, g_imageRect.top,
+                g_imageRect.right - g_imageRect.left,
+                g_imageRect.bottom - g_imageRect.top,
+                hdcImage, 0, 0, bmp.bmWidth, bmp.bmHeight, SRCCOPY
             );
-
-            DeleteDC(hdcMem);
+            DeleteDC(hdcImage);
         }
 
-        if (g_bShowAxis) {
-            DrawCoordinateAxis(hdc);
+        if (g_bShowAxis && g_hCurrentBitmap) {
+
+            // 计算图片中心点
+            POINT origin = {
+                g_imageRect.left + (g_imageRect.right - g_imageRect.left) / 2,
+                g_imageRect.top + (g_imageRect.bottom - g_imageRect.top) / 2
+            };
+
+            // 计算图片宽高
+            int imgWidth = g_imageRect.right - g_imageRect.left;
+            int imgHeight = g_imageRect.bottom - g_imageRect.top;
+
+            // 绘制坐标标签
+            TextOut(hdcMem, origin.x + 5, origin.y + 5, L"(0,0)", 5);                      // 原点
+            TextOut(hdcMem, origin.x + imgWidth / 2 - 50, origin.y + 5, L"(1784,0)", 8);   // X轴正方向
+            TextOut(hdcMem, origin.x + 5, origin.y - imgHeight / 2 + 5, L"(0,1784)", 8);   // Y轴正方向
+            TextOut(hdcMem, origin.x - imgWidth / 2 + 5, origin.y + 5, L"(-1784,0)", 8);   // X轴负方向
+            TextOut(hdcMem, origin.x + 5, origin.y + imgHeight / 2 - 20, L"(0,-1784)", 8); // Y轴负方向
+
+            // 创建画笔
+            HPEN hAxisPen = CreatePen(PS_SOLID, 2, RGB(0, 0, 0));
+            HPEN hOldPen = (HPEN)SelectObject(hdcMem, hAxisPen);
+
+            // 绘制X轴（限制在图片区域内）
+            MoveToEx(hdcMem, g_imageRect.left, origin.y, NULL);
+            LineTo(hdcMem, g_imageRect.right, origin.y);
+
+            // 绘制Y轴（限制在图片区域内）
+            MoveToEx(hdcMem, origin.x, g_imageRect.top, NULL);
+            LineTo(hdcMem, origin.x, g_imageRect.bottom);
+
+            // 恢复资源
+            SelectObject(hdcMem, hOldPen);
+            DeleteObject(hAxisPen);
         }
-        
-        if(g_hCurrentBitmap == 0){
+
+        if (g_bezier_type == Quadratic && g_hCurrentBitmap) {
+
+            if (g_controlPoints.size() >= 3) {
+                // 转换为图片相对坐标（假设曲线坐标基于图片区域）
+                std::vector<POINT> imgPoints;
+                for (const auto& cp : g_controlPoints) {
+                    imgPoints.push_back({
+                        cp.pos.x - g_imageRect.left,
+                        cp.pos.y - g_imageRect.top
+                        });
+                }
+
+                // 计算曲线路径
+                auto curvePoints = CalculateQuadraticBezier(imgPoints[0], imgPoints[1], imgPoints[2]);
+
+                // 转换为窗口绝对坐标
+                HPEN hCurvePen = CreatePen(PS_SOLID, 3, RGB(255, 0, 0));
+                SelectObject(hdcMem, hCurvePen);
+                for (size_t i = 0; i < curvePoints.size(); i++) {
+                    curvePoints[i].x += g_imageRect.left;
+                    curvePoints[i].y += g_imageRect.top;
+                }
+                Polyline(hdcMem, curvePoints.data(), (int)curvePoints.size());
+                DeleteObject(hCurvePen);
+            }
+        }
+        else if (g_bezier_type == Cubic && g_hCurrentBitmap) {
+
+        }
+        else if (g_bezier_type == Quartic && g_hCurrentBitmap) {
+
+        }
+
+        for (const auto& cp : g_controlPoints) {
+            HBRUSH hBrush = CreateSolidBrush(cp.color);
+            SelectObject(hdcMem, hBrush);
+            Ellipse(hdcMem,
+                cp.pos.x - POINT_RADIUS, cp.pos.y - POINT_RADIUS,
+                cp.pos.x + POINT_RADIUS, cp.pos.y + POINT_RADIUS
+            );
+            DeleteObject(hBrush);
+        }
+
+        if (g_hCurrentBitmap == NULL) {
             const wchar_t* tipText = L"点击设置选择场地";
-
-            // 设置字体（使用系统默认GUI字体）
             HFONT hFont = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
-            SelectObject(hdc, hFont);
-
-            // 设置文字颜色
-            SetTextColor(hdc, RGB(150, 150, 150));  // 灰色
-            SetBkMode(hdc, TRANSPARENT);  // 透明背景
-
-            // 计算文字位置（居中）
-            SIZE textSize;
-            GetTextExtentPoint32(hdc, tipText, wcslen(tipText), &textSize);
-            int x = (rect.right - textSize.cx) / 2;
-            int y = (rect.bottom - textSize.cy) / 2;
-
-            // 绘制文字
-            TextOut(hdc, x, y, tipText, wcslen(tipText));
+            HFONT hOldFont = (HFONT)SelectObject(hdcMem, hFont);
+            SetTextColor(hdcMem, RGB(150, 150, 150));
+            SetBkMode(hdcMem, TRANSPARENT);
+            TextOut(hdcMem, 460, 500, tipText, wcslen(tipText));
+            SelectObject(hdcMem, hOldFont);
         }
 
+        BitBlt(hdc, 0, 0, clientRect.right, clientRect.bottom, hdcMem, 0, 0, SRCCOPY);
+
+        DeleteObject(hbmMem);
+        DeleteDC(hdcMem);
         EndPaint(hWnd, &ps);
         return 0;
     }
+    case WM_LBUTTONDOWN: {
+        int x = LOWORD(lParam);
+        int y = HIWORD(lParam);
 
+        // 检测是否点击了已有控制点
+        for (size_t i = 0; i < g_controlPoints.size(); i++) {
+            int dx = g_controlPoints[i].pos.x - x;
+            int dy = g_controlPoints[i].pos.y - y;
+            if (dx * dx + dy * dy <= POINT_RADIUS * POINT_RADIUS) {
+                g_selectedPoint = i;
+                g_dragging = true;
+                SetCapture(hWnd); // 捕获鼠标
+                break;
+            }
+        }
+
+        // 未选中点时添加新控制点
+        if (!g_dragging) {
+            ControlPoint newPoint = { {x, y}, RGB(0, 255, 0) }; // 绿色默认
+            if (g_controlPoints.size() >= 1) {
+                newPoint.color = RGB(255, 0, 0); // 第二个及之后设为红色
+            }
+            g_controlPoints.push_back(newPoint);
+            InvalidateRect(hWnd, NULL, TRUE);
+        }
+
+        return 0;
+    }
+    case WM_MOUSEMOVE: { // 鼠标移动：拖动控制点
+        if (g_dragging && g_selectedPoint != -1) {
+            g_controlPoints[g_selectedPoint].pos.x = LOWORD(lParam);
+            g_controlPoints[g_selectedPoint].pos.y = HIWORD(lParam);
+        }
+        return 0;
+    }
+    case WM_LBUTTONUP: { // 左键释放：结束拖动
+        if (g_dragging) {
+            g_dragging = false;
+            g_selectedPoint = -1;
+        }
+        return 0;
+    }
+    case WM_RBUTTONDOWN: {
+
+        if (g_hCurrentBitmap) {
+            // 创建右键弹出菜单
+            HMENU hpopMenu = CreatePopupMenu();
+            if (g_bezier_type == Quadratic) {
+                AppendMenuW(
+                    hpopMenu, 
+                    MF_STRING | MF_DISABLED,
+                    0, 
+                    L"当前：2阶曲线"
+                );
+            }
+            else if (g_bezier_type == Cubic) {
+                AppendMenuW(
+                    hpopMenu,
+                    MF_STRING | MF_DISABLED,
+                    0,
+                    L"当前：3阶曲线"
+                );
+            }
+            else if (g_bezier_type == Quartic) {
+                AppendMenuW(
+                    hpopMenu,
+                    MF_STRING | MF_DISABLED,
+                    0,
+                    L"当前：4阶曲线"
+                );
+            }
+            
+            AppendMenuW(hpopMenu, MF_SEPARATOR, 0, NULL);
+            AppendMenuW(hpopMenu, MF_STRING, IDM_RIGHT_CREATE_CURVE, L"创建曲线");
+            AppendMenuW(hpopMenu, MF_STRING, IDM_RIGHT_CREATE_POINT, L"创建控制点");
+            AppendMenuW(hpopMenu, MF_STRING, IDM_RIGHT_DELETE_POINT, L"删除控制点/曲线");
+
+            // 获取鼠标位置（屏幕坐标）
+            POINT pt = { LOWORD(lParam), HIWORD(lParam) };
+            ClientToScreen(hWnd, &pt);
+
+            // 显示菜单并跟踪选项
+            TrackPopupMenu(
+                hpopMenu,
+                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
+                pt.x,
+                pt.y,
+                0,
+                hWnd,
+                NULL
+            );
+
+            DestroyMenu(hpopMenu);
+        }
+        
+        return 0;
+    }
     case WM_COMMAND: {
         int wmId = LOWORD(wParam);
+        HMENU hMenu = GetMenu(hWnd);
         switch (wmId) {
         case IDM_ABOUT:
             // 显示关于对话框（模态对话框）
@@ -255,19 +425,19 @@ LRESULT CALLBACK WndProc(
             );
             break;
 
-        case IDM_V5RC_SKILL:  // 菜单项ID（假设为4001）
+        case IDM_V5RC_SKILL:  
             g_nCurrentImageID = IDB_BITMAP1;
             break;
 
-        case IDM_V5RC_TOURNAMENT:  // 菜单项ID（假设为4001）
+        case IDM_V5RC_TOURNAMENT:  
             g_nCurrentImageID = IDB_BITMAP2;
             break;
 
-        case IDM_VURC_SKILL:  // 菜单项ID（假设为4001）
+        case IDM_VURC_SKILL:  
             g_nCurrentImageID = IDB_BITMAP3;
             break;
 
-        case IDM_VURC_TOURNAMENT:  // 菜单项ID（假设为4001）
+        case IDM_VURC_TOURNAMENT:  
             g_nCurrentImageID = IDB_BITMAP4;
             break;
 
@@ -275,12 +445,45 @@ LRESULT CALLBACK WndProc(
             g_bShowAxis = !g_bShowAxis;
 
             // 更新菜单勾选状态
-            HMENU hMenu = GetMenu(hWnd);
             CheckMenuItem(hMenu, IDM_AXIS,
                 g_bShowAxis ? MF_CHECKED : MF_UNCHECKED);
 
             InvalidateRect(hWnd, NULL, TRUE);
             break;
+
+        case IDM_2BEZIER: // 2阶贝塞尔
+            g_bezier_type = Quadratic;
+            
+            // 更新菜单勾选状态
+            CheckMenuItem(hMenu, IDM_2BEZIER, MF_CHECKED);
+            CheckMenuItem(hMenu, IDM_3BEZIER, MF_UNCHECKED);
+            CheckMenuItem(hMenu, IDM_4BEZIER, MF_UNCHECKED);
+
+            InvalidateRect(hWnd, NULL, TRUE);
+            break;
+
+        case IDM_3BEZIER: // 3阶贝塞尔
+            g_bezier_type = Cubic;
+
+            // 更新菜单勾选状态
+            CheckMenuItem(hMenu, IDM_2BEZIER, MF_UNCHECKED);
+            CheckMenuItem(hMenu, IDM_3BEZIER, MF_CHECKED);
+            CheckMenuItem(hMenu, IDM_4BEZIER, MF_UNCHECKED);
+
+            InvalidateRect(hWnd, NULL, TRUE);
+            break;
+
+        case IDM_4BEZIER: // 4阶贝塞尔
+            g_bezier_type = Quartic;
+
+            // 更新菜单勾选状态
+            CheckMenuItem(hMenu, IDM_2BEZIER, MF_UNCHECKED);
+            CheckMenuItem(hMenu, IDM_3BEZIER, MF_UNCHECKED);
+            CheckMenuItem(hMenu, IDM_4BEZIER, MF_CHECKED);
+
+            InvalidateRect(hWnd, NULL, TRUE);
+            break;
+
         }
 
         // 释放旧位图

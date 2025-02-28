@@ -42,6 +42,13 @@
 #define IDM_SHOWAXIS                    32795
 #define IDM_HIDEAXIS                    32796
 #define IDM_AXIS                        32797
+#define ID_32798                        32798
+#define ID_32799                        32799
+#define ID_32800                        32800
+#define ID_32801                        32801
+#define IDM_2BEZIER                     32802
+#define IDM_3BEZIER                     32803
+#define IDM_4BEZIER                     32804
 #define IDC_STATIC                      -1
 
 // Next default values for new objects
@@ -49,9 +56,9 @@
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NO_MFC                     1
-#define _APS_NEXT_RESOURCE_VALUE        137
-#define _APS_NEXT_COMMAND_VALUE         32798
+#define _APS_NEXT_RESOURCE_VALUE        140
+#define _APS_NEXT_COMMAND_VALUE         32808
 #define _APS_NEXT_CONTROL_VALUE         1002
-#define _APS_NEXT_SYMED_VALUE           110
+#define _APS_NEXT_SYMED_VALUE           111
 #endif
 #endif

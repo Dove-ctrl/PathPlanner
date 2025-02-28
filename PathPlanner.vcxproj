@@ -139,7 +139,6 @@
     <ResourceCompile Include="PathPlanner.rc" />
   </ItemGroup>
   <ItemGroup>
-    <Image Include="bitmap1.bmp" />
     <Image Include="PathPlanner.ico" />
     <Image Include="V5RC_S_2024-2025.bmp" />
     <Image Include="V5RC_T_2024_2025.bmp" />
