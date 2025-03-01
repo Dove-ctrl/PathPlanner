@@ -7,9 +7,8 @@
 #include <windows.h>
 #include <vector>
 
-#define IDM_RIGHT_CREATE_POINT     5001  
-#define IDM_RIGHT_DELETE_POINT      5002  
-#define IDM_RIGHT_CREATE_CURVE      5002  
+#define IDM_RIGHT_CREATE_CURVE      5001  // 新命令：创建二阶贝塞尔曲线
+#define IDM_RIGHT_DELETE_CURVE      5002  // 新命令：删除曲线
 
 // 全局变量
 HBITMAP g_hCurrentBitmap = NULL;  // 当前显示的位图
@@ -17,18 +16,16 @@ int g_nCurrentImageID = 0;        // 当前图片资源ID（0=无）
 bool g_bShowAxis = false;  // 初始显示坐标轴
 RECT g_imageRect = { 0 };
 
+bool bReloadImage = false;  // 标识是否需要重新加载图片
+
 enum BezierType { Quadratic, Cubic, Quartic};
 BezierType g_bezier_type = Quadratic;
 
-struct ControlPoint {
-    POINT pos;
-    COLORREF color;
-};
-
-std::vector<ControlPoint> g_controlPoints; // 存储所有控制点
-int g_selectedPoint = -1;                 // 当前选中的点索引（-1表示未选中）
-bool g_dragging = false;                  // 是否正在拖动
-const int POINT_RADIUS = 5;               // 控制点半径
+bool g_quadraticCurveCreated = false;
+POINT g_quadControlPoints[3]; // 三个控制点
+std::vector<POINT> g_quadraticCurvePoints; // 曲线点集合
+int g_draggedControlPoint = -1; // 正在拖动的控制点索引 (-1表示没有)
+bool g_isDragging = false;
 
 // 声明窗口过程函数
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
@@ -139,6 +136,21 @@ std::vector<POINT> CalculateQuarticBezier(POINT p0, POINT p1, POINT p2, POINT p3
     return result;
 }
 
+double Distance(POINT a, POINT b) {
+    int dx = a.x - b.x;
+    int dy = a.y - b.y;
+    return sqrt((double)(dx * dx + dy * dy));
+}
+
+bool IsPointNearCurve(POINT pt) {
+    const int threshold = 25;
+    for (const auto& curvePt : g_quadraticCurvePoints) {
+        if (Distance(pt, curvePt) <= threshold)
+            return true;
+    }
+    return false;
+}
+
 // 对话框过程函数（处理关于窗口的消息）
 INT_PTR CALLBACK AboutDialogProc(
     HWND hDlg,
@@ -170,6 +182,10 @@ LRESULT CALLBACK WndProc(
 
         // 其他初始化代码...
         return 0;
+    }
+    case WM_ERASEBKGND: {
+        // 禁用默认背景擦除，防止闪烁
+        return 1;
     }
     case WM_DESTROY: {  // 窗口被销毁
         if (g_hCurrentBitmap) DeleteObject(g_hCurrentBitmap);
@@ -254,47 +270,31 @@ LRESULT CALLBACK WndProc(
             DeleteObject(hAxisPen);
         }
 
-        if (g_bezier_type == Quadratic && g_hCurrentBitmap) {
+        if (g_bezier_type == Quadratic && g_hCurrentBitmap && g_quadraticCurveCreated) {
+            // 重新计算曲线点
+            g_quadraticCurvePoints = CalculateQuadraticBezier(g_quadControlPoints[0], g_quadControlPoints[1], g_quadControlPoints[2]);
+            // 绘制曲线
+            HPEN hCurvePen = CreatePen(PS_SOLID, 2, RGB(255, 0, 0));
+            HPEN hOldPen = (HPEN)SelectObject(hdcMem, hCurvePen);
+            if (!g_quadraticCurvePoints.empty())
+                Polyline(hdcMem, &g_quadraticCurvePoints[0], (int)g_quadraticCurvePoints.size());
+            SelectObject(hdcMem, hOldPen);
+            DeleteObject(hCurvePen);
 
-            if (g_controlPoints.size() >= 3) {
-                // 转换为图片相对坐标（假设曲线坐标基于图片区域）
-                std::vector<POINT> imgPoints;
-                for (const auto& cp : g_controlPoints) {
-                    imgPoints.push_back({
-                        cp.pos.x - g_imageRect.left,
-                        cp.pos.y - g_imageRect.top
-                        });
-                }
-
-                // 计算曲线路径
-                auto curvePoints = CalculateQuadraticBezier(imgPoints[0], imgPoints[1], imgPoints[2]);
-
-                // 转换为窗口绝对坐标
-                HPEN hCurvePen = CreatePen(PS_SOLID, 3, RGB(255, 0, 0));
-                SelectObject(hdcMem, hCurvePen);
-                for (size_t i = 0; i < curvePoints.size(); i++) {
-                    curvePoints[i].x += g_imageRect.left;
-                    curvePoints[i].y += g_imageRect.top;
-                }
-                Polyline(hdcMem, curvePoints.data(), (int)curvePoints.size());
-                DeleteObject(hCurvePen);
+            // 绘制控制点（绘制为小圆点）
+            HBRUSH hBrush = CreateSolidBrush(RGB(0, 0, 255));
+            for (int i = 0; i < 3; i++) {
+                int x = g_quadControlPoints[i].x;
+                int y = g_quadControlPoints[i].y;
+                Ellipse(hdcMem, x - 5, y - 5, x + 5, y + 5);
             }
+            DeleteObject(hBrush);
         }
         else if (g_bezier_type == Cubic && g_hCurrentBitmap) {
 
         }
         else if (g_bezier_type == Quartic && g_hCurrentBitmap) {
 
-        }
-
-        for (const auto& cp : g_controlPoints) {
-            HBRUSH hBrush = CreateSolidBrush(cp.color);
-            SelectObject(hdcMem, hBrush);
-            Ellipse(hdcMem,
-                cp.pos.x - POINT_RADIUS, cp.pos.y - POINT_RADIUS,
-                cp.pos.x + POINT_RADIUS, cp.pos.y + POINT_RADIUS
-            );
-            DeleteObject(hBrush);
         }
 
         if (g_hCurrentBitmap == NULL) {
@@ -314,108 +314,29 @@ LRESULT CALLBACK WndProc(
         EndPaint(hWnd, &ps);
         return 0;
     }
-    case WM_LBUTTONDOWN: {
-        int x = LOWORD(lParam);
-        int y = HIWORD(lParam);
-
-        // 检测是否点击了已有控制点
-        for (size_t i = 0; i < g_controlPoints.size(); i++) {
-            int dx = g_controlPoints[i].pos.x - x;
-            int dy = g_controlPoints[i].pos.y - y;
-            if (dx * dx + dy * dy <= POINT_RADIUS * POINT_RADIUS) {
-                g_selectedPoint = i;
-                g_dragging = true;
-                SetCapture(hWnd); // 捕获鼠标
-                break;
-            }
-        }
-
-        // 未选中点时添加新控制点
-        if (!g_dragging) {
-            ControlPoint newPoint = { {x, y}, RGB(0, 255, 0) }; // 绿色默认
-            if (g_controlPoints.size() >= 1) {
-                newPoint.color = RGB(255, 0, 0); // 第二个及之后设为红色
-            }
-            g_controlPoints.push_back(newPoint);
-            InvalidateRect(hWnd, NULL, TRUE);
-        }
-
-        return 0;
-    }
-    case WM_MOUSEMOVE: { // 鼠标移动：拖动控制点
-        if (g_dragging && g_selectedPoint != -1) {
-            g_controlPoints[g_selectedPoint].pos.x = LOWORD(lParam);
-            g_controlPoints[g_selectedPoint].pos.y = HIWORD(lParam);
-        }
-        return 0;
-    }
-    case WM_LBUTTONUP: { // 左键释放：结束拖动
-        if (g_dragging) {
-            g_dragging = false;
-            g_selectedPoint = -1;
-        }
-        return 0;
-    }
-    case WM_RBUTTONDOWN: {
-
+    case WM_CONTEXTMENU: {
         if (g_hCurrentBitmap) {
-            // 创建右键弹出菜单
-            HMENU hpopMenu = CreatePopupMenu();
-            if (g_bezier_type == Quadratic) {
-                AppendMenuW(
-                    hpopMenu, 
-                    MF_STRING | MF_DISABLED,
-                    0, 
-                    L"当前：2阶曲线"
-                );
+            POINT pt;
+            pt.x = LOWORD(lParam);
+            pt.y = HIWORD(lParam);
+            HMENU hPopup = CreatePopupMenu();
+            if (g_quadraticCurveCreated && IsPointNearCurve(pt)) {
+                AppendMenu(hPopup, MF_STRING, IDM_RIGHT_DELETE_CURVE, L"删除曲线");
             }
-            else if (g_bezier_type == Cubic) {
-                AppendMenuW(
-                    hpopMenu,
-                    MF_STRING | MF_DISABLED,
-                    0,
-                    L"当前：3阶曲线"
-                );
+            else {
+                AppendMenu(hPopup, MF_STRING, IDM_RIGHT_CREATE_CURVE, L"创建二阶贝塞尔曲线");
             }
-            else if (g_bezier_type == Quartic) {
-                AppendMenuW(
-                    hpopMenu,
-                    MF_STRING | MF_DISABLED,
-                    0,
-                    L"当前：4阶曲线"
-                );
-            }
-            
-            AppendMenuW(hpopMenu, MF_SEPARATOR, 0, NULL);
-            AppendMenuW(hpopMenu, MF_STRING, IDM_RIGHT_CREATE_CURVE, L"创建曲线");
-            AppendMenuW(hpopMenu, MF_STRING, IDM_RIGHT_CREATE_POINT, L"创建控制点");
-            AppendMenuW(hpopMenu, MF_STRING, IDM_RIGHT_DELETE_POINT, L"删除控制点/曲线");
-
-            // 获取鼠标位置（屏幕坐标）
-            POINT pt = { LOWORD(lParam), HIWORD(lParam) };
-            ClientToScreen(hWnd, &pt);
-
-            // 显示菜单并跟踪选项
-            TrackPopupMenu(
-                hpopMenu,
-                TPM_LEFTALIGN | TPM_TOPALIGN | TPM_RETURNCMD,
-                pt.x,
-                pt.y,
-                0,
-                hWnd,
-                NULL
-            );
-
-            DestroyMenu(hpopMenu);
+            TrackPopupMenu(hPopup, TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, NULL);
+            DestroyMenu(hPopup);
         }
-        
         return 0;
     }
     case WM_COMMAND: {
         int wmId = LOWORD(wParam);
         HMENU hMenu = GetMenu(hWnd);
+
         switch (wmId) {
-        case IDM_ABOUT:
+        case IDM_ABOUT: {
             // 显示关于对话框（模态对话框）
             DialogBox(
                 GetModuleHandle(NULL),  // 当前实例句柄
@@ -424,24 +345,28 @@ LRESULT CALLBACK WndProc(
                 AboutDialogProc         // 对话框过程函数
             );
             break;
-
-        case IDM_V5RC_SKILL:  
+        }
+        case IDM_V5RC_SKILL: {
             g_nCurrentImageID = IDB_BITMAP1;
+            bReloadImage = true;
             break;
-
-        case IDM_V5RC_TOURNAMENT:  
+        }
+        case IDM_V5RC_TOURNAMENT: {
             g_nCurrentImageID = IDB_BITMAP2;
+            bReloadImage = true;
             break;
-
-        case IDM_VURC_SKILL:  
+        }
+        case IDM_VURC_SKILL: {
             g_nCurrentImageID = IDB_BITMAP3;
+            bReloadImage = true;
             break;
-
-        case IDM_VURC_TOURNAMENT:  
+        }
+        case IDM_VURC_TOURNAMENT: {
             g_nCurrentImageID = IDB_BITMAP4;
+            bReloadImage = true;
             break;
-
-        case IDM_AXIS:  // 切换坐标轴显示
+        }
+        case IDM_AXIS: {  // 切换坐标轴显示
             g_bShowAxis = !g_bShowAxis;
 
             // 更新菜单勾选状态
@@ -450,10 +375,10 @@ LRESULT CALLBACK WndProc(
 
             InvalidateRect(hWnd, NULL, TRUE);
             break;
-
-        case IDM_2BEZIER: // 2阶贝塞尔
+        }
+        case IDM_2BEZIER: { // 2阶贝塞尔
             g_bezier_type = Quadratic;
-            
+
             // 更新菜单勾选状态
             CheckMenuItem(hMenu, IDM_2BEZIER, MF_CHECKED);
             CheckMenuItem(hMenu, IDM_3BEZIER, MF_UNCHECKED);
@@ -461,8 +386,8 @@ LRESULT CALLBACK WndProc(
 
             InvalidateRect(hWnd, NULL, TRUE);
             break;
-
-        case IDM_3BEZIER: // 3阶贝塞尔
+        }
+        case IDM_3BEZIER: { // 3阶贝塞尔
             g_bezier_type = Cubic;
 
             // 更新菜单勾选状态
@@ -472,8 +397,8 @@ LRESULT CALLBACK WndProc(
 
             InvalidateRect(hWnd, NULL, TRUE);
             break;
-
-        case IDM_4BEZIER: // 4阶贝塞尔
+        }
+        case IDM_4BEZIER:{ // 4阶贝塞尔
             g_bezier_type = Quartic;
 
             // 更新菜单勾选状态
@@ -483,28 +408,83 @@ LRESULT CALLBACK WndProc(
 
             InvalidateRect(hWnd, NULL, TRUE);
             break;
+        }
+        case IDM_RIGHT_CREATE_CURVE: {
+            // 初始化控制点：在图片区域内居中分布
+            if (!g_quadraticCurveCreated && g_hCurrentBitmap) {
+                g_quadraticCurveCreated = true;
+                int cx = (g_imageRect.left + g_imageRect.right) / 2;
+                int cy = (g_imageRect.top + g_imageRect.bottom) / 2;
+                g_quadControlPoints[0] = { cx - 100, cy };
+                g_quadControlPoints[1] = { cx, cy - 100 };
+                g_quadControlPoints[2] = { cx + 100, cy };
+            }
+            InvalidateRect(hWnd, NULL, TRUE);
+            break;
+        }
+        case IDM_RIGHT_DELETE_CURVE: {
+            g_quadraticCurveCreated = false;
+            g_quadraticCurvePoints.clear();
+            InvalidateRect(hWnd, NULL, TRUE);
+            break;
+        }
 
         }
 
-        // 释放旧位图
-        if (g_hCurrentBitmap) {
-            DeleteObject(g_hCurrentBitmap);
-            g_hCurrentBitmap = NULL;
-        }
-
-        // 加载新位图
-        if (g_nCurrentImageID != 0) {
-            g_hCurrentBitmap = LoadBitmap(
-                GetModuleHandle(NULL),
-                MAKEINTRESOURCE(g_nCurrentImageID)
-            );
+        // 只有在需要切换图片的时候才重新加载位图
+        if (bReloadImage) {
+            if (g_hCurrentBitmap) {
+                DeleteObject(g_hCurrentBitmap);
+                g_hCurrentBitmap = NULL;
+            }
+            if (g_nCurrentImageID != 0) {
+                g_hCurrentBitmap = LoadBitmap(
+                    GetModuleHandle(NULL),
+                    MAKEINTRESOURCE(g_nCurrentImageID)
+                );
+            }
         }
 
         // 强制重绘
         InvalidateRect(hWnd, NULL, TRUE);
         return 0;
     }
-
+    case WM_LBUTTONDOWN: {
+        POINT pt;
+        pt.x = LOWORD(lParam);
+        pt.y = HIWORD(lParam);
+        // 检查是否点击到任一控制点（半径5像素）
+        if (g_quadraticCurveCreated) {
+            for (int i = 0; i < 3; i++) {
+                if (Distance(pt, g_quadControlPoints[i]) <= 5) {
+                    g_draggedControlPoint = i;
+                    g_isDragging = true;
+                    SetCapture(hWnd);
+                    break;
+                }
+            }
+        }
+        break;
+    }
+    case WM_MOUSEMOVE: {
+        if (g_isDragging && g_draggedControlPoint != -1) {
+            POINT pt;
+            pt.x = LOWORD(lParam);
+            pt.y = HIWORD(lParam);
+            // 更新控制点位置
+            g_quadControlPoints[g_draggedControlPoint] = pt;
+            InvalidateRect(hWnd, NULL, TRUE);
+        }
+        break;
+    }
+    case WM_LBUTTONUP: {
+        if (g_isDragging) {
+            g_isDragging = false;
+            g_draggedControlPoint = -1;
+            ReleaseCapture();
+        }
+        break;
+    }
                  // 其他消息处理...
     default:
         return DefWindowProc(hWnd, message, wParam, lParam);
